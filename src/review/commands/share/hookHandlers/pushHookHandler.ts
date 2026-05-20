@@ -6,13 +6,13 @@ import {
   fetchMergeRequestCommits,
   fetchMergeRequestsByBranchName,
 } from '@/core/services/gitlab';
-import { logger } from '@/core/services/logger';
 import {
-  fetchSlackUserFromEmail,
+  fetchSlackUserFromEmails,
   slackBotWebClient,
 } from '@/core/services/slack';
 import type { DataReview } from '@/core/typings/Data';
 import type { GitlabPushedCommit } from '@/core/typings/GitlabPushedCommit';
+import { handleReviewWebhookError } from '../utils/handleReviewWebhookError';
 
 export async function pushHookHandler(
   req: Request,
@@ -85,9 +85,9 @@ export async function pushHookHandler(
             await Promise.all<KnownBlock[]>(
               newMergeRequestCommits.map(
                 async (commit: GitlabPushedCommit): Promise<KnownBlock[]> => {
-                  const author = await fetchSlackUserFromEmail(
+                  const author = await fetchSlackUserFromEmails([
                     commit.author.email,
-                  );
+                  ]);
                   return [
                     {
                       type: 'section',
@@ -127,12 +127,15 @@ export async function pushHookHandler(
               ),
             )
           ).flat(),
-        }))().catch((err) => {
-        logger.error(
-          { err, hook: 'push', mrIid: mergeRequestIid, projectId: project_id },
-          'webhook slack work failed',
-        );
-      }),
+        }))().catch((err) =>
+        handleReviewWebhookError(err, {
+          hook: 'push',
+          mrIid: mergeRequestIid,
+          projectId: project_id,
+          channelId,
+          reviewTs: ts,
+        }),
+      ),
     ),
   );
 }

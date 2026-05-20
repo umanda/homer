@@ -39,6 +39,20 @@ export async function errorMiddleware(
       { err: error, contentLength: req.header('content-length') },
       'request body exceeded size limit',
     );
+  } else if (isExpiredTriggeredIdError) {
+    // The user already gets EXPIRED_TRIGGER_ID_ERROR_MESSAGE as a retry
+    // prompt. This is an expected operational state (cold start, slow DB)
+    // rather than a system failure — log at warn with structured context.
+    logger.warn(
+      {
+        err: error,
+        slackError: EXPIRED_TRIGGER_ID_SLACK_ERROR,
+        command: req.body?.command,
+        userId: req.body?.user_id,
+        channelId: req.body?.channel_id,
+      },
+      'slack trigger_id expired before views.open',
+    );
   } else {
     logger.error(error);
   }

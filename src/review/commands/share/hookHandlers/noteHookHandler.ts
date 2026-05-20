@@ -1,10 +1,10 @@
 import type { Request, Response } from 'express';
 import { HTTP_STATUS_NO_CONTENT, HTTP_STATUS_OK } from '@/constants';
 import { getReviewsByMergeRequestIid } from '@/core/services/data';
-import { logger } from '@/core/services/logger';
 import { slackBotWebClient } from '@/core/services/slack';
 import type { GitlabProjectDetails } from '@/core/typings/GitlabProject';
 import { StateUpdateDebouncer } from '../utils/StateUpdateDebouncer';
+import { handleReviewWebhookError } from '../utils/handleReviewWebhookError';
 import { buildNoteMessage } from '../viewBuilders/buildNoteMessage';
 import { buildReviewMessage } from '../viewBuilders/buildReviewMessage';
 
@@ -44,40 +44,43 @@ export async function noteHookHandler(
   res.sendStatus(HTTP_STATUS_OK);
 
   await Promise.all(
-    reviews
-      .map(({ channelId, ts }) => {
-        const shockAbsorberId = `${channelId}_${ts}_${object_attributes.author_id}`;
+    reviews.map(async ({ channelId, ts }) => {
+      const shockAbsorberId = `${channelId}_${ts}_${object_attributes.author_id}`;
 
-        if (!shockAbsorbers.has(shockAbsorberId)) {
-          shockAbsorbers.set(
-            shockAbsorberId,
-            new StateUpdateDebouncer([], (state) => {
-              shockAbsorbers.delete(shockAbsorberId);
-              return buildNoteMessage(channelId, ts, state).then(
-                slackBotWebClient.chat.postMessage,
-              );
-            }),
-          );
-        }
+      if (!shockAbsorbers.has(shockAbsorberId)) {
+        shockAbsorbers.set(
+          shockAbsorberId,
+          new StateUpdateDebouncer([], (state) => {
+            shockAbsorbers.delete(shockAbsorberId);
+            return buildNoteMessage(channelId, ts, state).then(
+              slackBotWebClient.chat.postMessage,
+            );
+          }),
+        );
+      }
 
-        const shockAbsorber: StateUpdateDebouncer<
-          { author_id: number; note: string; url: string }[]
-        > = shockAbsorbers.get(shockAbsorberId)!;
+      const shockAbsorber: StateUpdateDebouncer<
+        { author_id: number; note: string; url: string }[]
+      > = shockAbsorbers.get(shockAbsorberId)!;
 
-        shockAbsorber.state = [...shockAbsorber.state, object_attributes];
+      shockAbsorber.state = [...shockAbsorber.state, object_attributes];
 
-        return [
+      try {
+        await Promise.all([
           buildReviewMessage(channelId, project.id, iid, ts).then(
             slackBotWebClient.chat.update,
           ),
           shockAbsorber.promise,
-        ];
-      })
-      .flat(),
-  ).catch((err) => {
-    logger.error(
-      { err, hook: 'note', mrIid: iid, projectId: project.id },
-      'webhook slack work failed',
-    );
-  });
+        ]);
+      } catch (err) {
+        await handleReviewWebhookError(err, {
+          hook: 'note',
+          mrIid: iid,
+          projectId: project.id,
+          channelId,
+          reviewTs: ts,
+        });
+      }
+    }),
+  );
 }

@@ -12,6 +12,7 @@ import {
   fetchSlackUserFromGitlabUsername,
   slackBotWebClient,
 } from '@/core/services/slack';
+import { handleReviewWebhookError } from '../utils/handleReviewWebhookError';
 import { buildReviewMessage } from '../viewBuilders/buildReviewMessage';
 
 const VALID_ACTIONS = [
@@ -81,25 +82,31 @@ export async function mergeRequestHookHandler(
 
   await Promise.all(
     reviews.map(async ({ channelId, ts }) => {
-      const updates = [
-        buildReviewMessage(channelId, projectId, iid, ts).then(
-          slackBotWebClient.chat.update,
-        ),
-        threadMessage &&
-          slackBotWebClient.chat.postMessage({
-            channel: channelId,
-            thread_ts: ts,
-            ...threadMessage,
-          }),
-      ].filter(Boolean);
-      return Promise.all(updates);
+      try {
+        await Promise.all(
+          [
+            buildReviewMessage(channelId, projectId, iid, ts).then(
+              slackBotWebClient.chat.update,
+            ),
+            threadMessage &&
+              slackBotWebClient.chat.postMessage({
+                channel: channelId,
+                thread_ts: ts,
+                ...threadMessage,
+              }),
+          ].filter(Boolean),
+        );
+      } catch (err) {
+        await handleReviewWebhookError(err, {
+          hook: 'merge_request',
+          mrIid: iid,
+          projectId,
+          channelId,
+          reviewTs: ts,
+        });
+      }
     }),
-  ).catch((err) => {
-    logger.error(
-      { err, hook: 'merge_request', mrIid: iid, projectId },
-      'webhook slack work failed',
-    );
-  });
+  );
 
   if (['close', 'merge'].includes(action)) {
     await removeReviewsByMergeRequestIid(iid);
@@ -120,22 +127,26 @@ async function handleNewReview(projectId: number, iid: number): Promise<void> {
 
   await Promise.all(
     configuredChannels.map(async ({ channelId }) => {
-      const { ts } = await slackBotWebClient.chat.postMessage(
-        await buildReviewMessage(channelId, projectId, iid),
-      );
-      await addReviewToChannel({
-        channelId,
-        mergeRequestIid: iid,
-        projectId,
-        ts: ts as string,
-      });
+      try {
+        const { ts } = await slackBotWebClient.chat.postMessage(
+          await buildReviewMessage(channelId, projectId, iid),
+        );
+        await addReviewToChannel({
+          channelId,
+          mergeRequestIid: iid,
+          projectId,
+          ts: ts as string,
+        });
+      } catch (err) {
+        await handleReviewWebhookError(err, {
+          hook: 'merge_request',
+          mrIid: iid,
+          projectId,
+          channelId,
+        });
+      }
     }),
-  ).catch((err) => {
-    logger.error(
-      { err, hook: 'merge_request', mrIid: iid, projectId },
-      'webhook slack work failed',
-    );
-  });
+  );
 }
 
 function getThreadMessage(
